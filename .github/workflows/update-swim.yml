@@ -1,0 +1,37 @@
+name: Update Dún Laoghaire Swim Window
+
+on:
+  schedule:
+    # Runs daily at 05:30 UTC (05:30 GMT in winter, 06:30 IST in summer)
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-swim-json:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Generate swim.json
+        run: node generate-swim.mjs
+
+      - name: Commit updated swim.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add swim.json
+          if git diff --staged --quiet; then
+            echo "No changes to swim.json"
+          else
+            git commit -m "Update Dún Laoghaire swim window"
+            git push
+          fi

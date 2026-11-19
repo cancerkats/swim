@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dún Laoghaire Tide & Swim Advisor</title>
+  <style>
+    :root {
+      --bg: #07131f;
+      --card: #0e2236;
+      --border: #1d3d5c;
+      --text: #eef6fc;
+      --muted: #93b3cf;
+      --accent: #2dd4bf;
+      --accent-soft: rgba(45, 212, 191, 0.14);
+      --warn: #fbbf24;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 20px;
+      line-height: 1.5;
+    }
+    .wrap { max-width: 720px; margin: 0 auto; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 20px;
+      margin-bottom: 16px;
+    }
+    h1 { margin: 0 0 6px; font-size: 1.5rem; }
+    .sub { color: var(--muted); font-size: 0.92rem; margin: 0; }
+    .swim-box {
+      background: var(--accent-soft);
+      border: 1px solid var(--accent);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-top: 12px;
+      font-size: 1.05rem;
+      font-weight: 600;
+    }
+    .meta { color: var(--muted); font-size: 0.88rem; margin-top: 8px; }
+    ul { margin: 10px 0 0; padding-left: 20px; }
+    li { margin-bottom: 6px; }
+    button {
+      background: var(--accent);
+      color: #042022;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 12px;
+    }
+    .note { color: var(--warn); font-size: 0.84rem; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Dún Laoghaire Tide & Swim Advisor</h1>
+      <p class="sub" id="clock">Loading Dublin time...</p>
+      <div class="swim-box" id="swim-summary">Calculating today's swim window...</div>
+      <div class="meta" id="sun-meta"></div>
+      <button id="speak-btn" type="button">Read Briefing Aloud</button>
+    </div>
+
+    <div class="card">
+      <strong>Today's Predicted Tides (Dún Laoghaire)</strong>
+      <ul id="tide-list"></ul>
+      <p class="note">
+        Swim rule: within ±2 hours of a High Tide, strictly between Sunrise and Sunset. Always check local sea conditions before entering the water.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    // Dún Laoghaire coordinates: 53.2939° N, 6.1359° W
+    const LAT = 53.2939;
+    const LON = -6.1359;
+    const TZ = "Europe/Dublin";
+
+    // Sample November 2026 schedule (replace or update daily via swim.json / automation)
+    const SCHEDULE_BY_DATE = {
+      "2026-11-19": [
+        { type: "Low", time: "00:10", height: "1.5m" },
+        { type: "High", time: "06:55", height: "3.4m" },
+        { type: "Low", time: "12:25", height: "1.8m" },
+        { type: "High", time: "19:00", height: "3.7m" }
+      ],
+      "2026-11-20": [
+        { type: "Low", time: "01:14", height: "0.84m" },
+        { type: "High", time: "07:46", height: "3.6m" },
+        { type: "Low", time: "13:20", height: "1.6m" },
+        { type: "High", time: "19:45", height: "3.7m" }
+      ]
+    };
+
+    function getDublinDateKey(date = new Date()) {
+      const parts = new Intl.DateTimeFormat("en-CA", {
+        timeZone: TZ,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).formatToParts(date);
+      const y = parts.find(p => p.type === "year").value;
+      const m = parts.find(p => p.type === "month").value;
+      const d = parts.find(p => p.type === "day").value;
+      return `${y}-${m}-${d}`;
+    }
+
+    function toMinutes(hhmm) {
+      const [h, m] = hhmm.split(":").map(Number);
+      return h * 60 + m;
+    }
+
+    function fromMinutes(totalMins) {
+      const clamped = Math.max(0, Math.min(1439, Math.round(totalMins)));
+      const h = String(Math.floor(clamped / 60)).padStart(2, "0");
+      const m = String(clamped % 60).padStart(2, "0");
+      return `${h}:${m}`;
+    }
+
+    // Approximate solar sunrise/sunset in minutes from midnight (UTC/GMT in November)
+    function getSunriseSunsetMinutes(dateKey) {
+      const [y, m, d] = dateKey.split("-").map(Number);
+      const dt = new Date(Date.UTC(y, m - 1, d, 12, 0, 0));
+      const start = new Date(Date.UTC(y, 0, 1));
+      const dayOfYear = Math.floor((dt - start) / 86400000) + 1;
+
+      const rad = Math.PI / 180;
+      const latRad = LAT * rad;
+      const decl = 23.44 * rad * Math.sin(rad * (360 / 365) * (dayOfYear - 81));
+      const cosH =
+        (Math.cos(90.833 * rad) - Math.sin(latRad) * Math.sin(decl)) /
+        (Math.cos(latRad) * Math.cos(decl));
+      const hourAngleDeg = Math.acos(Math.max(-1, Math.min(1, cosH))) / rad;
+
+      const offsetHours = -LON / 15;
+      const solarNoonMins = (12 + offsetHours) * 60;
+      const halfDayMins = (hourAngleDeg / 15) * 60;
+
+      // Dublin is GMT (+0) in November
+      return {
+        sunrise: Math.round(solarNoonMins - halfDayMins),
+        sunset: Math.round(solarNoonMins + halfDayMins)
+      };
+    }
+
+    function computeSwimWindows(tides, sun) {
+      const windows = [];
+      for (const tide of tides) {
+        if (tide.type.toLowerCase() !== "high") continue;
+        const ht = toMinutes(tide.time);
+        const start = Math.max(ht - 120, sun.sunrise);
+        const end = Math.min(ht + 120, sun.sunset);
+        if (start < end) {
+          windows.push({
+            start,
+            end,
+            highTime: tide.time,
+            label: `${fromMinutes(start)}–${fromMinutes(end)}`
+          });
+        }
+      }
+      return windows;
+    }
+
+    const now = new Date();
+    const dateKey = getDublinDateKey(now);
+    const tides = SCHEDULE_BY_DATE[dateKey] || SCHEDULE_BY_DATE["2026-11-20"];
+    const sun = getSunriseSunsetMinutes(dateKey);
+    const windows = computeSwimWindows(tides, sun);
+
+    document.getElementById("clock").textContent =
+      `Dublin (${dateKey}): ` +
+      now.toLocaleTimeString("en-IE", { timeZone: TZ, hour: "2-digit", minute: "2-digit" });
+
+    document.getElementById("sun-meta").textContent =
+      `Sunrise: ${fromMinutes(sun.sunrise)} · Sunset: ${fromMinutes(sun.sunset)} (GMT)`;
+
+    const swimMessage = windows.length
+      ? `Best swim window today: ${windows.map(w => `${w.label} (high tide ${w.highTime})`).join(" or ")}.`
+      : "No daylight high-tide swim window today in Dún Laoghaire.";
+
+    document.getElementById("swim-summary").textContent = swimMessage;
+
+    const listEl = document.getElementById("tide-list");
+    for (const t of tides) {
+      const li = document.createElement("li");
+      li.textContent = `${t.type} tide at ${t.time} (${t.height})`;
+      listEl.appendChild(li);
+    }
+
+    function speakBriefing() {
+      if (!("speechSynthesis" in window)) return;
+      window.speechSynthesis.cancel();
+      const text = `${swimMessage} Sunrise is ${fromMinutes(sun.sunrise)} and sunset is ${fromMinutes(sun.sunset)}.`;
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = "en-IE";
+      window.speechSynthesis.speak(utter);
+    }
+
+    document.getElementById("speak-btn").addEventListener("click", speakBriefing);
+  </script>
+</body>
+</html>
